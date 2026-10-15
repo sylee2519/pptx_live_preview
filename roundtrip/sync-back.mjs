@@ -46,7 +46,9 @@ const EMU = 914400;
 const TOL = 0.012; // inches
 
 if (!fs.existsSync(MANIFEST)) { console.error("sync-back: out/manifest.json missing — run `node deck.mjs` once first"); process.exit(2); }
-const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
+const MANIFEST_GIVEN = args.includes("--manifest");
+let manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
+let BASE = MANIFEST;                       // the manifest the saved file is diffed against (may become a backup's)
 if (manifest.theme?.colors) THEME = manifest.theme;
 else { try { THEME = (await import(path.join(ROOT, "theme.mjs"))).THEME; } catch { /* no theme: scheme colors stay unresolved */ } }
 const overrides = fs.existsSync(OVERRIDES) ? JSON.parse(fs.readFileSync(OVERRIDES, "utf8")) : {};
@@ -289,15 +291,15 @@ const slideFiles = listed.length
 const found = new Map();
 const slideOrder = [];
 const notesBySlide = new Map();
+const named = [];                          // [file, shape] for every shape the build named "<id>|<kind>|<n>"
+const unnamed = [];                        // [file, shape] for everything else (added in PowerPoint)
 for (const f of slideFiles) {
   const xml = await zip.file(f).async("string");
   const shapes = shapesOf(xml);
   let sid = null;
   for (const sh of shapes) {
-    const ours = sh.name && sh.name.includes("|");
-    if (ours && manifest.shapes[sh.name]) { found.set(sh.name, sh); sid = sid || sh.name.split("|")[0]; }
-    else if (ours) report.warnings.push(`${f}: shape ${sh.name} is not in the manifest (stale build?)`);
-    else if (sh.paras.length || sh.tag === "pic" || sh.cells) report.added.push(`${f.replace("ppt/slides/", "")}: new ${sh.tag}${sh.name ? ` "${sh.name}"` : ""}${sh.paras.length ? ` — "${sh.paras.map((p) => p.text).join(" / ").slice(0, 60)}"` : ""}`);
+    if (sh.name && sh.name.includes("|")) { named.push([f, sh]); sid = sid || sh.name.split("|")[0]; }
+    else unnamed.push([f, sh]);
   }
   if (sid) slideOrder.push(sid);
   const rels = zip.file(f.replace("ppt/slides/", "ppt/slides/_rels/") + ".rels");
@@ -314,6 +316,50 @@ for (const f of slideFiles) {
   }
 }
 
+// ---- which build was this file edited from? -------------------------------------------------------
+// PowerPoint keeps the file it opened in memory; if the code was rebuilt while it was open, the next save
+// writes the OLD build plus the user's edits. Diffing that against the current manifest would undo every
+// code change made in between. So, unless --manifest is given, pick the manifest (current, or one saved in
+// out/backup/*/) that the file is closest to, and apply only the differences from that one.
+const textOf = (m) => (m.cells ? m.cells.map((r) => r.join("\t")).join("\n") : (m.paras || []).map((p) => p.text).join("\n"));
+const shText = (sh) => (sh.cells ? sh.cells.map((r) => r.join("\t")).join("\n") : sh.paras.map((p) => p.text).join("\n"));
+function distance(man) {
+  const saved = new Map(named.map(([, sh]) => [sh.name, sh]));
+  const hiddenSlides = new Set(man.slides.filter((x) => x.hidden).map((x) => x.id));
+  let d = 0;
+  for (const [n, m] of Object.entries(man.shapes)) {
+    if (hiddenSlides.has(m.slide)) continue;
+    const sh = saved.get(n);
+    if (!sh) d++; else if (textOf(m) !== shText(sh)) d++;
+  }
+  for (const n of saved.keys()) if (!man.shapes[n]) d++;
+  return d;
+}
+if (!MANIFEST_GIVEN) {
+  const backupDir = path.join(ROOT, "out", "backup");
+  const cands = [[MANIFEST, manifest]];
+  if (fs.existsSync(backupDir)) {
+    for (const d of fs.readdirSync(backupDir).sort().reverse()) {
+      const f = path.join(backupDir, d, "manifest.json");
+      if (fs.existsSync(f)) { try { cands.push([f, JSON.parse(fs.readFileSync(f, "utf8"))]); } catch { /* skip */ } }
+    }
+  }
+  let best = cands[0], bestD = distance(cands[0][1]);
+  for (const c of cands.slice(1)) { const d = distance(c[1]); if (d < bestD) { best = c; bestD = d; } }
+  if (best[0] !== MANIFEST) {
+    BASE = best[0]; manifest = best[1];
+    if (manifest.theme?.colors) THEME = manifest.theme;
+    report.warnings.push(`this file was edited from an older build (${path.relative(ROOT, BASE)}; ${bestD} differences vs ${distance(cands[0][1])} against the current one): only your edits relative to that build are applied, code changes made since are kept`);
+  }
+}
+for (const [f, sh] of named) {
+  if (manifest.shapes[sh.name]) found.set(sh.name, sh);
+  else report.warnings.push(`${f}: shape ${sh.name} is not in the manifest (stale build?)`);
+}
+for (const [f, sh] of unnamed) {
+  if (sh.paras.length || sh.tag === "pic" || sh.cells) report.added.push(`${f.replace("ppt/slides/", "")}: new ${sh.tag}${sh.name ? ` "${sh.name}"` : ""}${sh.paras.length ? ` — "${sh.paras.map((p) => p.text).join(" / ").slice(0, 60)}"` : ""}`);
+}
+
 const presentSlides = new Set(slideOrder);
 const visibleSlides = manifest.slides.filter((s) => !s.hidden);           // slides the build actually emitted
 const missingSlides = visibleSlides.filter((s) => !presentSlides.has(s.id)).map((s) => s.id);
@@ -324,7 +370,7 @@ const missingSlides = visibleSlides.filter((s) => !presentSlides.has(s.id)).map(
   const missingShapes = Object.keys(manifest.shapes).filter((n) => !missingSlides.includes(manifest.shapes[n].slide) && !found.has(n)).length;
   const foreign = report.warnings.filter((w) => w.includes("not in the manifest")).length;
   if (!FORCE && expected && (missingShapes > expected * 0.3 || foreign > expected * 0.3)) {
-    console.error(`sync-back: ${PPTX} does not look like a save of the build in ${MANIFEST} (${missingShapes}/${expected} manifest shapes missing, ${foreign} shapes not in the manifest). Nothing written. Pass --manifest <the manifest of the build you edited> or --force.`);
+    console.error(`sync-back: ${PPTX} does not look like a save of the build in ${BASE} (${missingShapes}/${expected} manifest shapes missing, ${foreign} shapes not in the manifest). Nothing written. Pass --manifest <the manifest of the build you edited> or --force.`);
     process.exit(3);
   }
 }
@@ -421,6 +467,8 @@ const changedDeck = deckSrc !== fs.readFileSync(DECK, "utf8");
 if (!DRY) {
   if (changedDeck) fs.writeFileSync(DECK, deckSrc);
   fs.writeFileSync(OVERRIDES, JSON.stringify(overrides, null, 2) + "\n");
+  // tells tools/build.mjs whether the saved file is the current build (render it) or an older one (regenerate)
+  fs.writeFileSync(path.join(ROOT, "out", ".sync-base.json"), JSON.stringify({ base: path.relative(ROOT, BASE), current: BASE === MANIFEST, at: new Date().toISOString() }, null, 2));
 }
 const lines = [`sync-back${DRY ? " (dry run)" : ""}: ${PPTX}`];
 const section = (title, arr) => { if (arr.length) lines.push(`  ${title} (${arr.length}):\n    ` + arr.join("\n    ")); };

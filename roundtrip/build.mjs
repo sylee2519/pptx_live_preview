@@ -102,13 +102,23 @@ if (!pptxNow) {
     run("bash", [path.join(HERE, "render.sh"), PPTX, RENDER_DIR]);
     writeState("powerpoint-nosync");
   } else {
-    console.log("build: out/deck.pptx changed outside the build (PowerPoint save) → sync-back + render from the saved file");
+    console.log("build: out/deck.pptx changed outside the build (PowerPoint save) → sync-back");
     backup("sync");
     run("node", [path.join(HERE, "sync-back.mjs")]);
-    // refresh out/manifest.json from the patched code (no pptx overwrite), so the next save diffs correctly
-    { const r = spawnSync("node", [path.join(ROOT, "deck.mjs")], { cwd: ROOT, stdio: "inherit", env: { ...process.env, DECK_MANIFEST_ONLY: "1" } }); if (r.status !== 0) process.exit(r.status ?? 1); }
-    run("bash", [path.join(HERE, "render.sh"), PPTX, RENDER_DIR]);
-    writeState("powerpoint");
+    const sb = (() => { try { return JSON.parse(fs.readFileSync(path.join(OUT, ".sync-base.json"), "utf8")); } catch { return { current: true }; } })();
+    if (sb.current) {
+      // refresh out/manifest.json from the patched code (no pptx overwrite), so the next save diffs correctly
+      console.log("build: saved file is the current build → render from the saved file (PowerPoint keeps its file)");
+      { const r = spawnSync("node", [path.join(ROOT, "deck.mjs")], { cwd: ROOT, stdio: "inherit", env: { ...process.env, DECK_MANIFEST_ONLY: "1" } }); if (r.status !== 0) process.exit(r.status ?? 1); }
+      run("bash", [path.join(HERE, "render.sh"), PPTX, RENDER_DIR]);
+      writeState("powerpoint");
+    } else {
+      // the save came from an older build: the code now holds both the edits and the later code changes
+      console.log(`build: saved file was edited from an older build (${sb.base}) → regenerate from the merged code. Close and reopen out/deck.pptx in PowerPoint to see it.`);
+      run("node", [path.join(ROOT, "deck.mjs")]);
+      run("bash", [path.join(HERE, "render.sh"), PPTX, RENDER_DIR]);
+      writeState("powerpoint-merged", { base: sb.base });
+    }
   }
 } else if (codeChanged) {
   console.log("build: code changed → node deck.mjs + render");

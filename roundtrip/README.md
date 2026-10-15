@@ -38,6 +38,7 @@ Requirements in the deck project: `pptxgenjs` installed (`npm install`), LibreOf
 | only code changed (`deck.mjs`, `theme.mjs`, `overrides.json`, `assets/`) | backup → `node deck.mjs` → render |
 | `.pptx` **and** code changed together (a sync, `git checkout`, a cloud push), or the viewer reports both in `PPTX_PREVIEW_CHANGED` | external update → **no sync-back** → manifest from code → render from the `.pptx` |
 | `--force` while the `.pptx` holds an unsynced save | sync-back first, then rebuild — a PowerPoint edit is never discarded |
+| PowerPoint saves a copy it opened **before** a code rebuild (it does not reload the file) | sync-back diffs against the manifest of the build that copy came from (the closest one among the current manifest and `out/backup/*/manifest.json`), so only your edits are applied and the code changes are kept; then the merged code is regenerated. Close and reopen the `.pptx` to see it |
 | `--no-sync` | render only, never patch code |
 
 Every run that overwrites something first copies `out/deck.pptx`, `out/manifest.json`, `deck.mjs`,
@@ -65,7 +66,8 @@ Shapes added in PowerPoint and slide reordering are reported but cannot flow bac
 (more than 30 % of the shapes missing or foreign), nothing is written: pass `--manifest` for the build you
 edited (a backup has it) or `--force`.
 
-Options: `--dry-run`, `--pptx FILE`, `--manifest FILE`, `--force`.
+Options: `--dry-run`, `--pptx FILE`, `--manifest FILE` (skip the automatic choice of the base build), `--force`.
+It writes `out/.sync-base.json` (`{base, current}`) so `build.mjs` knows whether to render the saved file or regenerate.
 
 ## Contract for `deck.mjs` / `theme.mjs`
 
