@@ -62,6 +62,11 @@ export async function startLivePreview(options) {
   const renderDir = path.resolve(options.renderDir);
   const watchFiles = (options.watchFiles ?? []).map((file) => path.resolve(file));
   const build = normalizeBuild(options.build);
+  const settleMs = Number.isFinite(options.settleMs) ? Math.max(0, options.settleMs) : 800;
+  // Files that changed since the last build was started; handed to the build command as
+  // PPTX_PREVIEW_CHANGED (comma-separated absolute paths) so it can tell a PowerPoint save
+  // (only the .pptx changed) from an external update that replaced the sources and the .pptx together.
+  let changedFiles = new Set();
   const title = options.title ?? path.basename(pptx, path.extname(pptx));
   const host = options.host ?? "127.0.0.1";
   const port = Number(options.port ?? 8765);
@@ -101,6 +106,8 @@ export async function startLivePreview(options) {
 
     running = true;
     lastLog = "";
+    const changed = [...changedFiles];
+    changedFiles = new Set();
     setStatus({
       state: "building",
       reason,
@@ -111,7 +118,7 @@ export async function startLivePreview(options) {
 
     const child = spawn(build.command, build.args, {
       cwd: build.cwd,
-      env: { ...process.env, ...(build.env ?? {}) },
+      env: { ...process.env, ...(build.env ?? {}), PPTX_PREVIEW_CHANGED: changed.join(","), PPTX_PREVIEW_REASON: reason },
       shell: build.shell,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -152,17 +159,24 @@ export async function startLivePreview(options) {
     });
   }
 
+  // A change starts (or extends) a settle window; the build runs once the watched files have been quiet
+  // for `settleMs`. A PowerPoint save and a multi-file sync (scp, git checkout, a cloud push) each
+  // arrive as one build this way, with every changed file listed in PPTX_PREVIEW_CHANGED.
   let scheduleTimer = null;
-  function schedule(reason) {
+  function schedule(file) {
+    changedFiles.add(file);
     clearTimeout(scheduleTimer);
-    scheduleTimer = setTimeout(() => rebuild(reason), 250);
+    scheduleTimer = setTimeout(() => {
+      const names = [...changedFiles].map((f) => path.basename(f));
+      rebuild(names.length > 1 ? `${names.length} files (${names.join(", ")})` : names[0] ?? "change");
+    }, Math.max(settleMs, 250));
   }
 
   function startWatchers() {
     for (const file of watchFiles) {
       if (!fs.existsSync(file)) continue;
       fs.watchFile(file, { interval: 500 }, (current, previous) => {
-        if (current.mtimeMs !== previous.mtimeMs) schedule(path.basename(file));
+        if (current.mtimeMs !== previous.mtimeMs) schedule(file);
       });
     }
   }
@@ -338,12 +352,16 @@ function usage() {
 Options:
   --watch FILE          Rebuild when FILE changes. Repeatable.
   --build-command CMD   Shell command that regenerates the PPTX and slide PNGs.
+  --settle MS           Quiet time after the last change before a build starts. Default: 800.
+                        Files changed in that window are passed to the build command as
+                        PPTX_PREVIEW_CHANGED (comma-separated paths); the build reason as PPTX_PREVIEW_REASON.
   --title TEXT          Browser title. Defaults to the PPTX filename.
   --host HOST           Listen address. Default: 127.0.0.1.
   --port PORT           Listen port. Default: 8765.
   --help                Show this help.
 
-Rendered images must be named slide-1.png, slide-2.png, and so on.`);
+Rendered images must be named slide-1.png, slide-2.png, and so on.
+Round trip (edit the .pptx in PowerPoint, get the edits back into the code): see roundtrip/README.md.`);
 }
 
 function parseArgs(argv) {
@@ -360,6 +378,7 @@ function parseArgs(argv) {
     else if (argument === "--title") options.title = value;
     else if (argument === "--host") options.host = value;
     else if (argument === "--port") options.port = Number(value);
+    else if (argument === "--settle") options.settleMs = Number(value);
     else throw new Error(`Unknown option: ${argument}`);
     index += 1;
   }

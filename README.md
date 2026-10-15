@@ -11,7 +11,8 @@ The viewer provides:
 - automatic browser reload after successful rebuilds;
 - a link to open or download the generated PPTX.
 
-The viewer does not contain slide content or presentation-generation code.
+The viewer does not contain slide content. The optional `roundtrip/` scripts
+connect it to a code-generated deck (pptxgenjs) in both directions.
 Your build command remains responsible for producing:
 
 - a `.pptx` file;
@@ -39,7 +40,18 @@ node live-preview.mjs \
 
 Repeat `--watch FILE` to monitor more than one source file. The build command
 can use any presentation toolchain as long as it updates the PPTX and rendered
-slide PNGs.
+slide PNGs. Changes are collected for `--settle` milliseconds (default 800) and
+built once; the files that changed in that window are passed to the build
+command as `PPTX_PREVIEW_CHANGED` (comma-separated paths).
+
+## Round trip: edit in PowerPoint, keep the code
+
+Watch the `.pptx` too, and point `--build-command` at `roundtrip/build.mjs`
+(copied into the deck project as `tools/`). A save from PowerPoint is then
+synced back into the generator (`deck.mjs` / `overrides.json`) and re-rendered;
+a code change regenerates the `.pptx`; a change that replaces both at once (a
+sync or a checkout) is rendered without touching the code. Every overwrite is
+preceded by a backup in `out/backup/`. See [roundtrip/README.md](roundtrip/README.md).
 
 ## Install as a command
 
@@ -60,6 +72,7 @@ The project has no runtime package dependencies.
 --port PORT           Listen port, default 8765
 --watch FILE          Watched source file, repeatable
 --build-command CMD   External build command
+--settle MS           Quiet time before a build starts (default 800)
 ```
 
 Use `--host 0.0.0.0` only on a trusted network. The server has no authentication.

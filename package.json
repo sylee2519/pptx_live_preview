@@ -1,13 +1,13 @@
 {
   "name": "pptx-live-preview",
-  "version": "0.1.0",
-  "description": "A dependency-free local web viewer for generated PowerPoint decks.",
+  "version": "0.2.0",
+  "description": "A dependency-free local web viewer for generated PowerPoint decks, with an optional PowerPoint-to-code round trip.",
   "type": "module",
   "bin": {
     "pptx-live-preview": "./live-preview.mjs"
   },
   "scripts": {
-    "test": "node --check live-preview.mjs && node live-preview.mjs --help"
+    "test": "node --check live-preview.mjs && node --check roundtrip/build.mjs && node --check roundtrip/sync-back.mjs && node live-preview.mjs --help"
   },
   "engines": {
     "node": ">=18"
