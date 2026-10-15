@@ -56,12 +56,12 @@ finds those shapes, and for each difference:
 - font size / color / bold / italic / alignment → `overrides.json` `fmt` (per paragraph)
 - shape fill / border → `overrides.json` `fill` / `line`
 - moved / resized → `overrides.json` `{x,y,w,h}`
-- deleted → `overrides.json` `{hidden:true}`
+- deleted → `overrides.json` `{hidden:true}`; a whole slide deleted → `overrides.json` `"slide|<id>": {hidden:true}`
+  (the build skips the slide, its block stays in `deck.mjs`; remove the entry to bring it back)
 - table cells / rows / column widths → cell text patched when the grid is unchanged, else `cells` / `colW`
 - notes changed → patches the `notes:` literal
 
-Shapes added in PowerPoint and slide reordering are reported but cannot flow back. A whole slide missing
-from the file is reported, never hidden. If the file does not look like a save of the manifest's build
+Shapes added in PowerPoint and slide reordering are reported but cannot flow back. If the file does not look like a save of the manifest's build
 (more than 30 % of the shapes missing or foreign), nothing is written: pass `--manifest` for the build you
 edited (a backup has it) or `--force`.
 
@@ -74,7 +74,9 @@ Options: `--dry-run`, `--pptx FILE`, `--manifest FILE`, `--force`.
 - Every slide has a unique `id`; every shape is named `"<id>|<kind>|<n>"` (`objectName` in pptxgenjs).
 - `manifest.json` = `{ slides: [{id, index, notes}], shapes: { name: {slide, kind, x, y, w, h, paras:[{text, level, bold, italic, size, color, align}], fill, line, cells, colW, file} }, theme?: {colors:{dk1,lt1,…}} }`.
   Recording `theme` lets `sync-back` resolve PowerPoint scheme colors without importing `theme.mjs`.
-- `overrides.json` is read by the build: `{ "<name>": { x,y,w,h, hidden, text:[…], fmt:[…], fill, line, cells, colW } }`.
+- `overrides.json` is read by the build: `{ "<name>": { x,y,w,h, hidden, text:[…], fmt:[…], fill, line, cells, colW },
+  "slide|<id>": { hidden } }`. A hidden slide is still listed in `manifest.slides` with `hidden: true` and no shapes;
+  the slide constructor returns a no-op slide object so the deck code runs unchanged.
 - `apply_theme.cjs` writes the deck's colors into `ppt/theme/theme1.xml` after `pres.writeFile` (pptxgenjs
   hard-codes Office's palette); `notes_paragraphs.cjs` turns `\n` in speaker notes into paragraphs.
 - `render.sh DECK.pptx OUTDIR` renders `slide-N.png` with LibreOffice + `pdftoppm`.

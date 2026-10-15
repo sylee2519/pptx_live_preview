@@ -278,7 +278,14 @@ function fmtDiff(mp, sp) {
 
 // ---- main ----------------------------------------------------------------------------------------
 const zip = await JSZip.loadAsync(fs.readFileSync(PPTX));
-const slideFiles = Object.keys(zip.files).filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f)).sort((a, b) => +a.match(/(\d+)/)[1] - +b.match(/(\d+)/)[1]);
+// Only slides that are in the presentation's slide list count (a deleted slide can leave an orphan part).
+const presXml = await zip.file("ppt/presentation.xml")?.async("string") ?? "";
+const presRels = await zip.file("ppt/_rels/presentation.xml.rels")?.async("string") ?? "";
+const relTarget = new Map([...presRels.matchAll(/<Relationship\b[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"/g)].map((m) => [m[1], m[2]]));
+const listed = [...presXml.matchAll(/<p:sldId\b[^>]*\br:id="([^"]+)"/g)].map((m) => relTarget.get(m[1])).filter(Boolean).map((t) => "ppt/" + t.replace(/^\/?ppt\//, "").replace(/^\.\.\//, ""));
+const slideFiles = listed.length
+  ? listed.filter((f) => zip.files[f])
+  : Object.keys(zip.files).filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f)).sort((a, b) => +a.match(/(\d+)/)[1] - +b.match(/(\d+)/)[1]);
 const found = new Map();
 const slideOrder = [];
 const notesBySlide = new Map();
@@ -308,7 +315,8 @@ for (const f of slideFiles) {
 }
 
 const presentSlides = new Set(slideOrder);
-const missingSlides = manifest.slides.filter((s) => !presentSlides.has(s.id)).map((s) => s.id);
+const visibleSlides = manifest.slides.filter((s) => !s.hidden);           // slides the build actually emitted
+const missingSlides = visibleSlides.filter((s) => !presentSlides.has(s.id)).map((s) => s.id);
 {
   // Guard: a file from a different build (stale copy, or the manifest was replaced under it) would turn
   // every absent shape into a {hidden:true} override and mis-patch literals. Refuse unless --force.
@@ -320,11 +328,13 @@ const missingSlides = manifest.slides.filter((s) => !presentSlides.has(s.id)).ma
     process.exit(3);
   }
 }
-for (const id of missingSlides) report.warnings.push(`slide "${id}" is gone from the pptx — delete its block in deck.mjs if that was intended (shapes were NOT hidden)`);
-const manifestOrder = manifest.slides.map((s) => s.id).filter((id) => presentSlides.has(id));
+const manifestOrder = visibleSlides.map((s) => s.id).filter((id) => presentSlides.has(id));
 if (manifestOrder.join(",") !== slideOrder.join(",")) report.warnings.push("slide order differs from deck.mjs — reorder the blocks in deck.mjs to keep it");
 
 const setOv = (name, patch) => { overrides[name] = { ...(overrides[name] || {}), ...patch }; };
+// A slide deleted in PowerPoint: the build skips it from now on (theme.mjs startSlide honours
+// overrides["slide|<id>"].hidden) and keeps its block in deck.mjs; remove the entry to bring it back.
+for (const id of missingSlides) { setOv(`slide|${id}`, { hidden: true }); report.hidden.push(`slide "${id}" (whole slide; remove "slide|${id}" from overrides.json to restore)`); }
 
 for (const [name, m] of Object.entries(manifest.shapes)) {
   if (missingSlides.includes(m.slide)) continue;
